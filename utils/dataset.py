@@ -4,11 +4,16 @@ utils/dataset.py
 Dataset utilities for KADID-10k and KonIQ-10k.
 
 MOS normalisation:
-  KADID  : dmos in [1, 5]   → (score - 1) / 4    → [0, 1]
-  KonIQ  : MOS  in [1, 100] → (score - 1) / 99   → [0, 1]
+  KADID  : dmos in [1, 5]   -> (score - 1) / 4   -> [0, 1]
+  KonIQ  : MOS  in [1, 100] -> (score - 1) / 99  -> [0, 1]
+
+Split strategy:
+  Each dataset is split independently into train / val / test before
+  merging, so both datasets are always represented in every split.
 
 Usage:
-    from utils.dataset import load_kadid, load_koniq, IQADataset, build_dataloaders
+    from utils.dataset import build_dataloaders
+    train_loader, val_loader, test_loader = build_dataloaders(cfg)
 """
 
 import random
@@ -38,17 +43,20 @@ def get_transforms(image_size: int, train: bool = True) -> transforms.Compose:
     """
     Standard IQA augmentation / eval pipeline.
 
-    Train: random crop + flip + colour jitter
-    Val  : centre resize only
+    Train : random crop + flip + colour jitter
+    Val / Test : centre resize only (no augmentation — deterministic)
     """
-    norm = transforms.Normalize([0.485, 0.456, 0.406],
-                                 [0.229, 0.224, 0.225])
+    norm = transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225],
+    )
     if train:
         return transforms.Compose([
             transforms.RandomResizedCrop(image_size, scale=(0.8, 1.0)),
             transforms.RandomHorizontalFlip(),
-            transforms.ColorJitter(brightness=0.1, contrast=0.1,
-                                   saturation=0.1, hue=0.02),
+            transforms.ColorJitter(
+                brightness=0.1, contrast=0.1, saturation=0.1, hue=0.02
+            ),
             transforms.ToTensor(),
             norm,
         ])
@@ -60,7 +68,7 @@ def get_transforms(image_size: int, train: bool = True) -> transforms.Compose:
 
 
 # ---------------------------------------------------------------------------
-# Generic Dataset
+# Generic IQA Dataset
 # ---------------------------------------------------------------------------
 
 class IQADataset(Dataset):
@@ -69,11 +77,11 @@ class IQADataset(Dataset):
 
     Args:
         records   : List of (image_path, mos_score) where score is in [0, 1]
-        transform : torchvision transform to apply to each image
+        transform : torchvision transform applied to each image
 
     Returns per item:
         image     : (3, H, W) float tensor
-        mos_score : scalar float tensor in [0, 1]
+        mos_score : scalar float32 tensor in [0, 1]
     """
 
     def __init__(self, records: List[Record], transform=None):
@@ -92,21 +100,22 @@ class IQADataset(Dataset):
 
 
 # ---------------------------------------------------------------------------
-# KADID-10k
+# KADID-10k loader
 # ---------------------------------------------------------------------------
 
 def load_kadid(img_dir: str, csv_path: str) -> List[Record]:
     """
     Load KADID-10k records.
 
-    Expected CSV columns: img_name (or similar), dmos (or mos).
-    Column names are detected flexibly — exact casing does not matter.
+    CSV columns detected flexibly (case-insensitive):
+      image name : any column containing 'name' or 'img'
+      score      : any column containing 'dmos' or 'mos'
 
-    dmos range  : 1–5, higher = better quality
-    Normalised  : (dmos - 1) / 4  →  [0, 1]
+    dmos range : 1-5, higher = better quality
+    Normalised : (dmos - 1) / 4  ->  [0, 1]
 
     Args:
-        img_dir  : Directory containing the distorted images (*.png)
+        img_dir  : Directory containing distorted images (*.png)
         csv_path : Path to dmos.csv
 
     Returns:
@@ -129,26 +138,29 @@ def load_kadid(img_dir: str, csv_path: str) -> List[Record]:
         mos = float(np.clip((float(row[score_col]) - 1.0) / 4.0, 0.0, 1.0))
         records.append((str(p), mos))
 
-    print(f"[KADID]  Loaded {len(records)} images"
-          + (f"  ({missing} missing)" if missing else "")
-          + f"  MOS ∈ [{min(r[1] for r in records):.3f},"
-            f" {max(r[1] for r in records):.3f}]")
+    print(
+        f"  [KADID]  {len(records):>5} images loaded"
+        + (f"  ({missing} paths missing)" if missing else "")
+        + f"  MOS in [{min(r[1] for r in records):.3f},"
+          f" {max(r[1] for r in records):.3f}]"
+    )
     return records
 
 
 # ---------------------------------------------------------------------------
-# KonIQ-10k
+# KonIQ-10k loader
 # ---------------------------------------------------------------------------
 
 def load_koniq(img_dir: str, csv_path: str) -> List[Record]:
     """
     Load KonIQ-10k records.
 
-    Expected CSV columns: image_name (or similar), MOS (or score).
-    Column names are detected flexibly.
+    CSV columns detected flexibly (case-insensitive):
+      image name : any column containing 'name' or 'image'
+      score      : any column containing 'mos' or 'score'
 
-    MOS range   : 1–100, higher = better quality
-    Normalised  : (MOS - 1) / 99  →  [0, 1]
+    MOS range  : 1-100, higher = better quality
+    Normalised : (MOS - 1) / 99  ->  [0, 1]
 
     Args:
         img_dir  : Directory containing images (*.jpg)
@@ -174,85 +186,142 @@ def load_koniq(img_dir: str, csv_path: str) -> List[Record]:
         mos = float(np.clip((float(row[score_col]) - 1.0) / 99.0, 0.0, 1.0))
         records.append((str(p), mos))
 
-    print(f"[KonIQ]  Loaded {len(records)} images"
-          + (f"  ({missing} missing)" if missing else "")
-          + f"  MOS ∈ [{min(r[1] for r in records):.3f},"
-            f" {max(r[1] for r in records):.3f}]")
+    print(
+        f"  [KonIQ]  {len(records):>5} images loaded"
+        + (f"  ({missing} paths missing)" if missing else "")
+        + f"  MOS in [{min(r[1] for r in records):.3f},"
+          f" {max(r[1] for r in records):.3f}]"
+    )
     return records
 
 
 # ---------------------------------------------------------------------------
-# Train / Val split
+# 3-way split
 # ---------------------------------------------------------------------------
 
-def split_records(
+def split_records_3way(
     records: List[Record],
-    val_frac: float = 0.1,
-    seed: int = 42,
-) -> Tuple[List[Record], List[Record]]:
+    val_frac: float  = 0.1,
+    test_frac: float = 0.1,
+    seed: int        = 42,
+) -> Tuple[List[Record], List[Record], List[Record]]:
     """
-    Deterministic random split.
+    Deterministic 3-way split into train / val / test.
 
-    Each dataset (KADID, KonIQ) is split independently before merging
-    so both datasets are represented in the validation set.
+    Called independently per dataset (KADID, KonIQ) so both are
+    represented in every split after merging.
 
     Args:
-        records  : Full list of records
-        val_frac : Fraction to hold out for validation
-        seed     : RNG seed for reproducibility
+        records   : Full record list for one dataset
+        val_frac  : Fraction held out for validation  (default 0.1)
+        test_frac : Fraction held out for test        (default 0.1)
+        seed      : RNG seed for reproducibility
 
     Returns:
-        (train_records, val_records)
+        (train_records, val_records, test_records)
+
+    Raises:
+        ValueError : if val_frac + test_frac >= 1.0
     """
-    rng = random.Random(seed)
+    if val_frac + test_frac >= 1.0:
+        raise ValueError(
+            f"val_frac ({val_frac}) + test_frac ({test_frac}) must be < 1.0"
+        )
+
+    rng      = random.Random(seed)
     shuffled = records[:]
     rng.shuffle(shuffled)
-    n_val = max(1, int(len(shuffled) * val_frac))
-    return shuffled[n_val:], shuffled[:n_val]
+
+    n        = len(shuffled)
+    n_val    = max(1, int(n * val_frac))
+    n_test   = max(1, int(n * test_frac))
+    n_train  = n - n_val - n_test
+
+    if n_train < 1:
+        raise ValueError(
+            f"Dataset too small ({n} records) for the requested split fractions."
+        )
+
+    train = shuffled[:n_train]
+    val   = shuffled[n_train : n_train + n_val]
+    test  = shuffled[n_train + n_val :]
+
+    return train, val, test
 
 
 # ---------------------------------------------------------------------------
 # DataLoader builder
 # ---------------------------------------------------------------------------
 
-def build_dataloaders(cfg: dict) -> Tuple[DataLoader, DataLoader]:
+def build_dataloaders(
+    cfg: dict,
+) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
-    Load both datasets, merge, split, and return DataLoaders.
+    Load KADID + KonIQ, apply 3-way split, and return DataLoaders.
+
+    Each dataset is split independently so both appear in every split,
+    then the splits are merged and shuffled (train only).
 
     Expected cfg keys:
         kadid_img_dir, kadid_csv
         koniq_img_dir, koniq_csv
-        val_split, image_size, batch_size, num_workers
+        val_split    (float, default 0.1)
+        test_split   (float, default 0.1)
+        image_size, batch_size, num_workers
+        seed         (int,   default 42)
 
     Returns:
-        (train_loader, val_loader)
+        (train_loader, val_loader, test_loader)
     """
+    print("Loading datasets...")
     kadid_records = load_kadid(cfg["kadid_img_dir"], cfg["kadid_csv"])
     koniq_records = load_koniq(cfg["koniq_img_dir"], cfg["koniq_csv"])
 
-    seed = cfg.get("seed", 42)
-    k_train, k_val = split_records(kadid_records, cfg["val_split"], seed)
-    q_train, q_val = split_records(koniq_records, cfg["val_split"], seed)
+    seed      = cfg.get("seed", 42)
+    val_frac  = cfg.get("val_split",  0.1)
+    test_frac = cfg.get("test_split", 0.1)
+
+    k_train, k_val, k_test = split_records_3way(kadid_records, val_frac, test_frac, seed)
+    q_train, q_val, q_test = split_records_3way(koniq_records, val_frac, test_frac, seed)
 
     train_records = k_train + q_train
     val_records   = k_val   + q_val
+    test_records  = k_test  + q_test
+
+    # Shuffle train after merging (val/test are kept in split order — deterministic)
     random.Random(seed).shuffle(train_records)
 
-    print(f"[Data]   Train={len(train_records)}  Val={len(val_records)}")
+    print(
+        f"  [Split]  Train={len(train_records)}"
+        f"  Val={len(val_records)}"
+        f"  Test={len(test_records)}"
+    )
 
-    sz = cfg["image_size"]
+    sz           = cfg["image_size"]
+    batch_size   = cfg["batch_size"]
+    num_workers  = cfg["num_workers"]
+
     train_loader = DataLoader(
         IQADataset(train_records, get_transforms(sz, train=True)),
-        batch_size=cfg["batch_size"],
+        batch_size=batch_size,
         shuffle=True,
-        num_workers=cfg["num_workers"],
+        num_workers=num_workers,
         pin_memory=True,
+        drop_last=True,   # Avoid single-sample batches that break BatchNorm
     )
     val_loader = DataLoader(
         IQADataset(val_records, get_transforms(sz, train=False)),
-        batch_size=cfg["batch_size"],
+        batch_size=batch_size,
         shuffle=False,
-        num_workers=cfg["num_workers"],
+        num_workers=num_workers,
         pin_memory=True,
     )
-    return train_loader, val_loader
+    test_loader = DataLoader(
+        IQADataset(test_records, get_transforms(sz, train=False)),
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+
+    return train_loader, val_loader, test_loader
